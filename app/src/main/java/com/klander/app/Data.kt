@@ -2,6 +2,7 @@ package com.klander.app
 
 import android.app.*
 import android.appwidget.AppWidgetManager
+import android.appwidget.AppWidgetProvider
 import android.content.*
 import android.widget.RemoteViews
 import org.json.JSONArray
