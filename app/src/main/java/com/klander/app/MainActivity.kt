@@ -183,14 +183,14 @@ fun App(onClose: () -> Unit) {
             }) { _, d -> dx += d }
         }) {
             Row(Modifier.fillMaxWidth().height(28.dp)) { listOf("S", "M", "T", "W", "T", "F", "S").forEach { Text(it, Modifier.weight(1f), color = Dim, fontSize = 11.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center) } }
-            val first = month.atDay(1); val off0 = first.dayOfWeek.value % 7; val len = month.lengthOfMonth()
+            val first = month.withDayOfMonth(1); val off0 = first.dayOfWeek.value % 7; val len = month.lengthOfMonth()
             for (r in 0 until 6) Row(Modifier.fillMaxWidth().weight(1f)) {
                 for (col in 0 until 7) {
                     val d = r * 7 + col - off0 + 1
                     Box(Modifier.weight(1f).fillMaxHeight().background(CellBg).border(0.5.dp, Line)
-                        .clickable(enabled = d in 1..len) { buzz(); sel = month.atDay(d); mode = 1 }, Alignment.Center) {
+                        .clickable(enabled = d in 1..len) { buzz(); sel = month.withDayOfMonth(d); mode = 1 }, Alignment.Center) {
                         if (d in 1..len) {
-                            val date = month.atDay(d); val list = byDay[date]
+                            val date = month.withDayOfMonth(d); val list = byDay[date]
                             if (list != null) Stamp(stickerOf(list[0].title), Pal[(d + list[0].title.length) % 6], Modifier.size(30.dp, 36.dp), 16)
                             else if (date == LocalDate.now()) Box(Modifier.size(28.dp).clip(CircleShape).background(Color.White), Alignment.Center) { Text("$d", color = Color.Black, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
                             else Text("$d", color = Color.White, fontSize = 12.sp)
