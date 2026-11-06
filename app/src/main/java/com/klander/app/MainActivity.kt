@@ -1,7 +1,6 @@
 package com.klander.app
 
 import android.Manifest
-import android.app.DatePickerDialog
 import android.app.TimePickerDialog
 import android.content.Intent
 import android.os.Build
@@ -17,13 +16,14 @@ import androidx.compose.foundation.*
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.*
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.pager.*
 import androidx.compose.foundation.shape.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.*
 import androidx.compose.ui.draw.*
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.geometry.*
+import androidx.compose.ui.graphics.*
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.*
@@ -32,13 +32,37 @@ import androidx.compose.ui.unit.*
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import java.time.*
 import java.time.format.DateTimeFormatter
-import kotlin.math.*
+import java.util.Locale
+import kotlin.math.abs
 
-val Yellow = Color(0xFFFFEB00); val Ink = Color(0xFF111111)
-val Grey = Color(0xFFC4C4C4); val Dim = Color(0xFF8A8A8A); val Cream = Color(0xFFF3F3EF)
+val Bg = Color(0xFF0A0A0A); val CellBg = Color(0xFF121212); val Line = Color(0xFF1F1F1F); val Dim = Color(0xFF8A8A8A)
+val Pal = listOf(Color(0xFFB8C7D9), Color(0xFFF2EEE8), Color(0xFFE9E2F5), Color(0xFFFFD9C7), Color(0xFFD6EBD2), Color(0xFFFFE98A))
+val Stk = listOf("🐥", "🌼", "🍓", "🐰", "⭐", "🍀", "🧸", "🦊", "🐙", "🍩", "🌙", "🐢", "🍒", "🦋", "🐻", "🍄", "🌈", "🐳", "🍋", "🐼", "🧁", "🐸", "🍉", "🐱")
+
+fun stickerOf(t: String): String {
+    val f = t.substringBefore(' ')
+    return if (t.contains(' ') && f.isNotEmpty() && f.codePointAt(0) > 0x2000) f else Stk[abs(t.hashCode()) % Stk.size]
+}
+
+class StampShape : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
+        val r = with(density) { 2.5.dp.toPx() }; val step = r * 3.4f
+        val rect = Path().apply { addRect(Rect(0f, 0f, size.width, size.height)) }
+        val holes = Path().apply {
+            var x = step / 2; while (x < size.width) { addOval(Rect(Offset(x, 0f), r)); addOval(Rect(Offset(x, size.height), r)); x += step }
+            var y = step / 2; while (y < size.height) { addOval(Rect(Offset(0f, y), r)); addOval(Rect(Offset(size.width, y), r)); y += step }
+        }
+        return Outline.Generic(Path.combine(PathOperation.Difference, rect, holes))
+    }
+}
+
+@Composable
+fun Stamp(e: String, bg: Color, mod: Modifier, fs: Int) {
+    Box(mod.clip(StampShape()).background(bg), Alignment.Center) { Text(e, fontSize = fs.sp) }
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(s: Bundle?) {
@@ -48,7 +72,7 @@ class MainActivity : ComponentActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         if (Build.VERSION.SDK_INT >= 28)
             window.attributes = window.attributes.apply { layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES }
-        setContent { App() }
+        setContent { App { finish() } }
         WindowCompat.getInsetsController(window, window.decorView).apply {
             systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             hide(WindowInsetsCompat.Type.systemBars())
@@ -57,7 +81,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun Modifier.bounce(onClick: () -> Unit): Modifier {
+fun Modifier.press(onClick: () -> Unit): Modifier {
     val hf = LocalHapticFeedback.current
     val src = remember { MutableInteractionSource() }
     val p by src.collectIsPressedAsState()
@@ -65,179 +89,163 @@ fun Modifier.bounce(onClick: () -> Unit): Modifier {
     return this.scale(s).clickable(src, null) { hf.performHapticFeedback(HapticFeedbackType.LongPress); onClick() }
 }
 
+@OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
-fun Bubble(t: String, onClick: () -> Unit) {
-    Box(Modifier.size(46.dp).clip(CircleShape).background(Cream).bounce(onClick), Alignment.Center) { Text(t, fontSize = 18.sp) }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-fun App() {
-    val c = LocalContext.current; val hf = LocalHapticFeedback.current; val z = ZoneId.systemDefault()
-    var day by remember { mutableStateOf(LocalDate.now()) }
+fun App(onClose: () -> Unit) {
+    val c = LocalContext.current; val hf = LocalHapticFeedback.current; val z = ZoneId.systemDefault(); val scope = rememberCoroutineScope()
+    val base = remember { LocalDate.now().withDayOfMonth(1) }
+    val pager = rememberPagerState(300) { 600 }
+    val month = base.plusMonths((pager.currentPage - 300).toLong())
     var evs by remember { mutableStateOf(Store.load(c)) }
     var stars by remember { mutableStateOf(c.getSharedPreferences("k", 0).getStringSet("s", emptySet())!!.toSet()) }
-    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    var sel by remember { mutableStateOf(LocalDate.now()) }
+    var mode by remember { mutableStateOf(0) }
+    var menu by remember { mutableStateOf(false) }
     var add by remember { mutableStateOf(false) }
     var title by remember { mutableStateOf("") }
-    var list by remember { mutableStateOf(0) }
-    LaunchedEffect(Unit) { while (true) { now = System.currentTimeMillis(); delay(1000) } }
+    var pick by remember { mutableStateOf(Stk[0]) }
 
     fun dateOf(e: Ev) = Instant.ofEpochMilli(e.whenMs).atZone(z).toLocalDate()
     fun hhmm(e: Ev) = Instant.ofEpochMilli(e.whenMs).atZone(z).toLocalTime().format(DateTimeFormatter.ofPattern("HH:mm"))
-    val today = evs.filter { dateOf(it) == day }
-    val upcoming = today.filter { it.whenMs > now }
-    val next = upcoming.firstOrNull(); val after = upcoming.getOrNull(1)
-    val diff = if (next != null) (next.whenMs - now) / 1000 else 0L
-    val (a, b, unit) = when {
-        diff >= 86400 -> Triple(diff / 86400, diff % 86400 / 3600, "day")
-        diff >= 3600 -> Triple(diff / 3600, diff % 3600 / 60, "hr")
-        else -> Triple(diff / 60, diff % 60, "min")
-    }
-    val prog by animateFloatAsState(if (next == null) 0f else (1f - min(diff, 900L) / 900f), tween(900), label = "p")
-
     fun toast(s: String) = Toast.makeText(c, s, Toast.LENGTH_SHORT).show()
     fun buzz() = hf.performHapticFeedback(HapticFeedbackType.LongPress)
     fun imp(e: Ev) = Ev(e.id + 7, "Important: " + e.title, e.whenMs - 45 * 60000)
     fun commit(l: List<Ev>) { evs = l.sortedBy { it.whenMs }; Store.save(c, evs); KWidget.refresh(c) }
     fun remove(e: Ev) { Sched.cancel(c, e); Sched.cancel(c, imp(e)); commit(evs - e); toast("Deleted") }
     fun saveStars(s: Set<String>) { stars = s; c.getSharedPreferences("k", 0).edit().putStringSet("s", s).apply() }
-    fun go(d: Long) { day = day.plusDays(d); hf.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
-    fun pick() { buzz(); DatePickerDialog(c, { _, y, m, d -> day = LocalDate.of(y, m + 1, d) }, day.year, day.monthValue - 1, day.dayOfMonth).show() }
-    fun toggleStar() {
-        val e = next ?: return toast("No upcoming event to mark")
+    fun star(e: Ev) {
         val k = e.id.toString()
         if (k in stars) { saveStars(stars - k); Sched.cancel(c, imp(e)); toast("Removed from important") }
-        else { saveStars(stars + k); Sched.set(c, imp(e)); toast("Marked important: extra reminder 1 hr before") }
+        else { saveStars(stars + k); Sched.set(c, imp(e)); toast("Important: extra reminder 1 hr before") }
     }
-    fun share() {
-        val txt = if (today.isEmpty()) "No events on $day" else "Klander " + day.format(DateTimeFormatter.ofPattern("MMM d")) + "\n" + today.joinToString("\n") { hhmm(it) + "  " + it.title }
-        c.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, txt), "Share agenda"))
-    }
-    fun jumpNext() { val e = evs.firstOrNull { dateOf(it) > day }; if (e != null) day = dateOf(e) else toast("No later events") }
     fun reschedule(e: Ev) {
         val t = Instant.ofEpochMilli(e.whenMs).atZone(z).toLocalTime()
         TimePickerDialog(c, { _, h, m ->
             val n = e.copy(whenMs = dateOf(e).atTime(h, m).atZone(z).toInstant().toEpochMilli())
-            Sched.cancel(c, e); Sched.cancel(c, imp(e))
-            commit(evs - e + n); Sched.set(c, n)
-            if (e.id.toString() in stars) Sched.set(c, imp(n))
-            toast("Time updated")
+            Sched.cancel(c, e); Sched.cancel(c, imp(e)); commit(evs - e + n); Sched.set(c, n)
+            if (e.id.toString() in stars) Sched.set(c, imp(n)); toast("Time updated")
         }, t.hour, t.minute, true).show()
     }
+    fun share() {
+        val l = evs.filter { YearMonth.from(dateOf(it)) == YearMonth.from(month) }
+        val txt = if (l.isEmpty()) "No events in ${month.month}" else "Klander " + month.format(DateTimeFormatter.ofPattern("MMMM yyyy")) + "\n" + l.joinToString("\n") { dateOf(it).dayOfMonth.toString() + "  " + hhmm(it) + "  " + it.title }
+        c.startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, txt), "Share"))
+    }
+    LaunchedEffect(pager.currentPage) { hf.performHapticFeedback(HapticFeedbackType.TextHandleMove) }
+    val byDay = evs.groupBy { dateOf(it) }
 
-    Column(Modifier.fillMaxSize().background(Color.White).safeDrawingPadding().padding(20.dp)) {
-        Row(Modifier.fillMaxWidth()) {
-            AnimatedContent(day, modifier = Modifier.weight(1f).clickable { pick() },
-                transitionSpec = { (slideInVertically { it / 3 } + fadeIn()) togetherWith (slideOutVertically { -it / 3 } + fadeOut()) }, label = "d") { d ->
-                Column {
-                    Text(d.format(DateTimeFormatter.ofPattern("MMM d")), fontSize = 38.sp, fontWeight = FontWeight.Black, color = Ink)
-                    Text("${today.size} Meetings", fontSize = 38.sp, fontWeight = FontWeight.Black, color = Grey)
-                }
-            }
-            Text("≡", fontSize = 30.sp, color = Ink, modifier = Modifier.bounce { list = 2 }.padding(8.dp))
-        }
-        Spacer(Modifier.height(16.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Bubble(if (next != null && next.id.toString() in stars) "★" else "☆") { toggleStar() }
-            Row(Modifier.clip(RoundedCornerShape(50)).background(Cream).bounce { list = 1 }.padding(8.dp), horizontalArrangement = Arrangement.spacedBy((-8).dp)) {
-                val cols = listOf(Color(0xFF222222), Color(0xFFD9A441), Color(0xFF9DB0CC), Color(0xFFC77D5B), Color(0xFF6B8F71))
-                (today.ifEmpty { listOf(Ev(0, "+", 0)) }).take(5).forEachIndexed { i, e ->
-                    Box(Modifier.size(36.dp).clip(CircleShape).background(cols[i % 5]), Alignment.Center) { Text(e.title.take(1).uppercase(), color = Color.White, fontWeight = FontWeight.Bold) }
-                }
-            }
-            Bubble("✉") { share() }
-        }
-        Box(Modifier.fillMaxWidth().height(230.dp).pointerInput(day) {
-            var dx = 0f
-            detectHorizontalDragGestures(onDragStart = { dx = 0f }, onDragEnd = { if (dx > 120) go(-1) else if (dx < -120) go(1) }) { _, d -> dx += d }
-        }) {
+    Column(Modifier.fillMaxSize().background(Bg)) {
+        Box(Modifier.fillMaxWidth().weight(1f)) {
             Canvas(Modifier.fillMaxSize()) {
-                val cx = size.width / 2; val cy = size.height * 1.25f; val r = size.width * 0.62f
-                for (i in 0..60) {
-                    val ang = Math.toRadians(215.0 + i * 110.0 / 60)
-                    val len = if (i % 5 == 0) 22f else 12f
-                    drawLine(Grey, Offset(cx + r * cos(ang).toFloat(), cy + r * sin(ang).toFloat()),
-                        Offset(cx + (r - len) * cos(ang).toFloat(), cy + (r - len) * sin(ang).toFloat()), 3f)
-                }
-                val m = Math.toRadians(215.0 + (0.2 + prog * 0.6) * 110.0)
-                drawLine(Color(0xFFE5352B), Offset(cx + (r + 4) * cos(m).toFloat(), cy + (r + 4) * sin(m).toFloat()),
-                    Offset(cx + (r - 40) * cos(m).toFloat(), cy + (r - 40) * sin(m).toFloat()), 5f)
+                val g = 40.dp.toPx(); var x = 0f; while (x < size.width) { drawLine(Line, Offset(x, 0f), Offset(x, size.height), 1f); x += g }
+                var y = 0f; while (y < size.height) { drawLine(Line, Offset(0f, y), Offset(size.width, y), 1f); y += g }
             }
-            Row(Modifier.align(Alignment.Center), verticalAlignment = Alignment.CenterVertically) {
-                Text("‹", fontSize = 34.sp, color = Dim, modifier = Modifier.bounce { go(-1) }.padding(12.dp))
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(unit, color = Dim, fontSize = 13.sp)
-                    Row {
-                        Text("%02d".format(a), fontSize = 54.sp, fontWeight = FontWeight.Medium, color = Grey)
-                        Text(":", fontSize = 54.sp, color = Grey)
-                        Text("%02d".format(b), fontSize = 54.sp, fontWeight = FontWeight.Medium, color = if (next == null) Grey else Ink)
+            VerticalPager(pager, Modifier.fillMaxSize()) { page ->
+                val pm = base.plusMonths((page - 300).toLong())
+                val off = (pager.currentPage - page) + pager.currentPageOffsetFraction
+                val own = evs.filter { YearMonth.from(dateOf(it)) == YearMonth.from(pm) }.map { stickerOf(it.title) }.distinct()
+                val set = (own + (0 until 6).map { Stk[(pm.monthValue * 5 + it * 3) % Stk.size] }).take(6)
+                BoxWithConstraints(Modifier.fillMaxSize().graphicsLayer { alpha = 1f - abs(off).coerceIn(0f, 1f) }) {
+                    val w = maxWidth; val h = maxHeight
+                    set.forEachIndexed { i, e ->
+                        val sw = w * (0.27f + 0.02f * (i % 3))
+                        Stamp(e, Pal[(pm.monthValue + i) % 6], Modifier.offset(w * (0.02f + 0.15f * i), h * (0.66f - 0.105f * i)).size(sw, sw * 1.2f)
+                            .graphicsLayer { translationY = off * h.toPx() * (0.4f + 0.25f * i); rotationZ = ((i % 3) - 1) * 4f
+                                val s = 1f - 0.15f * abs(off).coerceIn(0f, 1f); scaleX = s; scaleY = s }, 40)
                     }
-                    Text(if (next == null) "Nothing left" else "Before the start", color = Dim, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                }
-                Text("›", fontSize = 34.sp, color = Dim, modifier = Modifier.bounce { go(1) }.padding(12.dp))
-            }
-        }
-        Row(Modifier.fillMaxWidth().weight(1f).padding(bottom = 14.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Column(Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(22.dp)).background(Yellow)
-                .combinedClickable(onClick = { buzz(); next?.let { reschedule(it) } ?: toast("Tap + to add an event") },
-                    onLongClick = { buzz(); next?.let { remove(it) } }).padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
-                Text("You Have\na Meeting", fontWeight = FontWeight.Bold, color = Ink, fontSize = 15.sp)
-                Column {
-                    Row { Text(next?.let { hhmm(it).substringBefore(":") } ?: "--", fontSize = 40.sp, color = Ink)
-                        Text(":" + (next?.let { hhmm(it).substringAfter(":") } ?: "--"), fontSize = 40.sp, color = Ink.copy(.45f)) }
-                    Text((if (next != null && next.id.toString() in stars) "★ " else "") + (next?.title ?: "Tap + to add"), fontWeight = FontWeight.Bold, color = Ink, fontSize = 15.sp)
-                    Text("Tap: edit time · Hold: delete", color = Ink.copy(.55f), fontSize = 10.sp)
                 }
             }
-            Column(Modifier.weight(1f).fillMaxHeight().clip(RoundedCornerShape(22.dp)).background(Cream)
-                .clickable { buzz(); after?.let { reschedule(it) } ?: toast("No second event today") }.padding(16.dp), verticalArrangement = Arrangement.SpaceBetween) {
-                Text(after?.title ?: "All clear", fontWeight = FontWeight.Bold, fontSize = 17.sp, color = Ink)
-                Column { Text(if (after != null) "at " + hhmm(after) else "to you", color = Dim, fontSize = 12.sp)
-                    Text(if (after != null) "Up next after this one" else "No more events on this day", fontWeight = FontWeight.SemiBold, color = Ink, fontSize = 14.sp) }
+            Box(Modifier.fillMaxWidth().height(90.dp).align(Alignment.BottomCenter).background(Brush.verticalGradient(listOf(Color.Transparent, Bg))))
+            Row(Modifier.fillMaxWidth().safeDrawingPadding().padding(horizontal = 20.dp, vertical = 10.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                Box(Modifier.size(44.dp).clip(CircleShape).background(Color(0xFF2A2A2A)).press { onClose() }, Alignment.Center) { Text("✕", color = Color.White, fontSize = 16.sp) }
+                Box {
+                    Box(Modifier.size(44.dp).clip(CircleShape).background(Color(0xFF2A2A2A)).press { menu = true }, Alignment.Center) { Text("•••", color = Color.White, fontSize = 14.sp) }
+                    DropdownMenu(menu, { menu = false }) {
+                        DropdownMenuItem({ Text("Today") }, { menu = false; scope.launch { pager.animateScrollToPage(300) }; sel = LocalDate.now() })
+                        DropdownMenuItem({ Text("All upcoming") }, { menu = false; mode = 2 })
+                        DropdownMenuItem({ Text("Share month") }, { menu = false; share() })
+                    }
+                }
+            }
+            AnimatedContent(month, Modifier.align(Alignment.BottomEnd).padding(end = 20.dp, bottom = 12.dp),
+                transitionSpec = { (slideInVertically { it } + fadeIn()) togetherWith (slideOutVertically { -it } + fadeOut()) }, label = "m") { m ->
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(m.year.toString(), color = Dim, fontSize = 18.sp)
+                    Text(m.month.getDisplayName(java.time.format.TextStyle.FULL, Locale.getDefault()), color = Color.White, fontSize = 36.sp, fontWeight = FontWeight.Bold)
+                }
             }
         }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(54.dp).clip(CircleShape).background(Cream).bounce { day = LocalDate.now(); toast("Today") }, Alignment.Center) { Text("💬") }
-            Row(Modifier.clip(RoundedCornerShape(50)).background(Ink).padding(start = 22.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("Calls", color = Color.White, fontWeight = FontWeight.Bold, modifier = Modifier.bounce { list = 1 })
-                Spacer(Modifier.width(20.dp))
-                Box(Modifier.size(54.dp).clip(CircleShape).background(Ink).border(1.dp, Color.White.copy(.25f), CircleShape).bounce { title = ""; add = true }, Alignment.Center) { Text("+", color = Color.White, fontSize = 26.sp) }
-            }
-            Box(Modifier.size(54.dp).clip(CircleShape).background(Cream).bounce { jumpNext() }, Alignment.Center) { Text("▮▮▮", fontSize = 9.sp) }
-        }
-    }
-
-    if (list != 0) {
-        val rows = if (list == 1) today else evs.filter { it.whenMs >= now - 3600000 }
-        AlertDialog(onDismissRequest = { list = 0 },
-            title = { Text(if (list == 1) "Events on " + day.format(DateTimeFormatter.ofPattern("MMM d")) else "All upcoming") },
-            text = { Column(Modifier.verticalScroll(rememberScrollState())) {
-                if (rows.isEmpty()) Text("Nothing here yet. Tap + to add an event.")
-                rows.forEach { e ->
-                    Row(Modifier.fillMaxWidth().clickable { day = dateOf(e); list = 0 }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text((if (e.id.toString() in stars) "★ " else "") + e.title, fontWeight = FontWeight.Bold)
-                            Text(dateOf(e).toString() + "  " + hhmm(e), color = Dim, fontSize = 12.sp)
+        Column(Modifier.fillMaxWidth().weight(1.15f).navigationBarsPadding().pointerInput(Unit) {
+            var dx = 0f
+            detectHorizontalDragGestures(onDragStart = { dx = 0f }, onDragEnd = {
+                val t = pager.currentPage + (if (dx < -100) 1 else if (dx > 100) -1 else 0)
+                if (t != pager.currentPage) scope.launch { pager.animateScrollToPage(t) }
+            }) { _, d -> dx += d }
+        }) {
+            Row(Modifier.fillMaxWidth().height(28.dp)) { listOf("S", "M", "T", "W", "T", "F", "S").forEach { Text(it, Modifier.weight(1f), color = Dim, fontSize = 11.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center) } }
+            val first = month.atDay(1); val off0 = first.dayOfWeek.value % 7; val len = month.lengthOfMonth()
+            for (r in 0 until 6) Row(Modifier.fillMaxWidth().weight(1f)) {
+                for (col in 0 until 7) {
+                    val d = r * 7 + col - off0 + 1
+                    Box(Modifier.weight(1f).fillMaxHeight().background(CellBg).border(0.5.dp, Line)
+                        .clickable(enabled = d in 1..len) { buzz(); sel = month.atDay(d); mode = 1 }, Alignment.Center) {
+                        if (d in 1..len) {
+                            val date = month.atDay(d); val list = byDay[date]
+                            if (list != null) Stamp(stickerOf(list[0].title), Pal[(d + list[0].title.length) % 6], Modifier.size(30.dp, 36.dp), 16)
+                            else if (date == LocalDate.now()) Box(Modifier.size(28.dp).clip(CircleShape).background(Color.White), Alignment.Center) { Text("$d", color = Color.Black, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+                            else Text("$d", color = Color.White, fontSize = 12.sp)
                         }
-                        Text("✕", modifier = Modifier.bounce { remove(e) }.padding(10.dp))
                     }
                 }
-            } },
-            confirmButton = { TextButton(onClick = { list = 0 }) { Text("Close") } })
+            }
+        }
     }
 
-    if (add) AlertDialog(onDismissRequest = { add = false },
-        title = { Text("New event") },
-        text = { OutlinedTextField(title, { title = it }, placeholder = { Text("Development call") }, singleLine = true) },
-        confirmButton = { TextButton(onClick = {
-            if (title.isBlank()) { toast("Type a title first") } else {
+    if (mode != 0) {
+        val rows = if (mode == 1) byDay[sel] ?: emptyList() else evs.filter { it.whenMs >= System.currentTimeMillis() - 3600000 }
+        ModalBottomSheet({ mode = 0 }, containerColor = Color(0xFF161616)) {
+            Column(Modifier.padding(horizontal = 20.dp).navigationBarsPadding().padding(bottom = 16.dp)) {
+                Text(if (mode == 1) sel.format(DateTimeFormatter.ofPattern("EEE, MMM d")) else "All upcoming", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(8.dp))
+                Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                    if (rows.isEmpty()) Text("No events yet. Tap Add event.", color = Dim, modifier = Modifier.padding(vertical = 12.dp))
+                    rows.forEach { e ->
+                        Row(Modifier.fillMaxWidth().clickable { buzz(); reschedule(e) }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Stamp(stickerOf(e.title), Pal[e.title.length % 6], Modifier.size(34.dp, 40.dp), 18)
+                            Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+                                Text(e.title, color = Color.White, fontWeight = FontWeight.Bold)
+                                Text((if (mode == 2) dateOf(e).toString() + "  " else "") + hhmm(e) + "  (tap to change time)", color = Dim, fontSize = 12.sp)
+                            }
+                            Text(if (e.id.toString() in stars) "★" else "☆", color = Color(0xFFFFE98A), fontSize = 22.sp, modifier = Modifier.press { star(e) }.padding(8.dp))
+                            Text("✕", color = Color.White, modifier = Modifier.press { remove(e) }.padding(8.dp))
+                        }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+                Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(50)).background(Color.White).press { title = ""; add = true }.padding(14.dp), Alignment.Center) {
+                    Text("+  Add event", color = Color.Black, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+
+    if (add) AlertDialog({ add = false }, title = { Text("New event") },
+        text = { Column {
+            OutlinedTextField(title, { title = it }, placeholder = { Text("Development call") }, singleLine = true)
+            Spacer(Modifier.height(10.dp))
+            Row(Modifier.horizontalScroll(rememberScrollState())) {
+                Stk.forEach { s -> Text(s, fontSize = 26.sp, modifier = Modifier.padding(4.dp).clip(CircleShape).background(if (s == pick) Color(0xFFFFE98A) else Color.Transparent).clickable { pick = s; buzz() }.padding(6.dp)) }
+            }
+        } },
+        confirmButton = { TextButton({
+            if (title.isBlank()) toast("Type a title first") else {
                 add = false
                 TimePickerDialog(c, { _, h, m ->
-                    val e = Ev(System.currentTimeMillis(), title.trim(), day.atTime(h, m).atZone(z).toInstant().toEpochMilli())
+                    val e = Ev(System.currentTimeMillis(), "$pick ${title.trim()}", sel.atTime(h, m).atZone(z).toInstant().toEpochMilli())
                     commit(evs + e); Sched.set(c, e); buzz(); toast("Saved. Reminder set")
+                    if (YearMonth.from(sel) != YearMonth.from(month)) scope.launch { pager.animateScrollToPage(300 + java.time.temporal.ChronoUnit.MONTHS.between(base, sel.withDayOfMonth(1)).toInt()) }
                 }, 9, 0, true).show()
             }
         }) { Text("Pick time") } },
-        dismissButton = { TextButton(onClick = { add = false }) { Text("Cancel") } })
+        dismissButton = { TextButton({ add = false }) { Text("Cancel") } })
 }
